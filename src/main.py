@@ -23,6 +23,17 @@ def main():
     try:
         scraper.start()
         
+        # 检查是否需要登录
+        # 如果没有 auth.json 或者用户主动要求登录，可以在这里处理
+        # 这里做一个简单的逻辑：如果 auth.json 不存在，提示登录
+        if not os.path.exists(scraper.auth_file):
+            print("检测到未登录状态。")
+            choice = input("是否现在进行手动登录？(y/n): ").strip().lower()
+            if choice == 'y':
+                scraper.manual_login()
+            else:
+                print("将尝试以未登录访客模式继续（可能会受限）...")
+
         # 1. 搜索与筛选
         scraper.search_and_filter(KEYWORDS[0])
         

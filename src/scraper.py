@@ -1,12 +1,15 @@
 import time
 import random
+import os
+from datetime import datetime
 from typing import List, Dict, Any
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 from src.utils import parse_douyin_time, is_target_comment
 
 class DouyinScraper:
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, auth_file: str = "auth.json"):
         self.headless = headless
+        self.auth_file = auth_file
         self.playwright = None
         self.browser = None
         self.context = None
@@ -15,21 +18,69 @@ class DouyinScraper:
     def start(self):
         """启动浏览器"""
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(
-            headless=self.headless,
-            args=['--disable-blink-features=AutomationControlled']  # 规避部分检测
-        )
-        # 加载状态（如果有）
-        if False: # TODO: 实现状态加载逻辑
-            pass
-        else:
-            self.context = self.browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        # 尝试使用本地 Chrome 浏览器，以规避"浏览器版本过低"的检测
+        # 如果没有安装 Chrome，可以尝试改为 'msedge' 或删除 channel 参数(但可能回到版本过低问题)
+        try:
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                channel="chrome", 
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-infobars',
+                ]
             )
+        except Exception as e:
+            print(f"启动本地 Chrome 失败，尝试使用默认 Chromium (可能仍会被检测): {e}")
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+
+        # 加载状态（如果有）
+        # 不再硬编码 User-Agent，让浏览器使用默认值，或者仅在必要时伪装
+        context_args = {
+            "viewport": {"width": 1280, "height": 720},
+            # 移除硬编码的 User-Agent，使用浏览器默认的，通常更真实
+        }
+        
+        if os.path.exists(self.auth_file):
+            print(f"加载登录状态: {self.auth_file}")
+            context_args["storage_state"] = self.auth_file
+            
+        self.context = self.browser.new_context(**context_args)
         
         self.page = self.context.new_page()
-        # 添加反检测脚本
-        self.page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        # 注入更强的反检测脚本
+        js_script = """
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            window.chrome = { runtime: {} };
+        """
+        self.page.add_init_script(js_script)
+        
+        # 预加载首页
+        print("正在加载抖音首页...")
+        try:
+            self.page.goto("https://www.douyin.com/")
+        except Exception as e:
+            print(f"首页加载异常 (可忽略): {e}")
+
+    def manual_login(self):
+        """手动登录并保存状态"""
+        print("正在打开登录页...")
+        # 如果当前已经在首页，刷新一下或者直接使用
+        if "douyin.com" not in self.page.url:
+            self.page.goto("https://www.douyin.com/")
+            
+        print("请在浏览器中手动完成登录（推荐扫码）。")
+        print("登录完成后，请按回车键继续...")
+        input()
+        
+        # 保存状态
+        self.context.storage_state(path=self.auth_file)
+        print(f"登录状态已保存至: {self.auth_file}")
 
     def stop(self):
         """关闭浏览器"""
@@ -134,46 +185,56 @@ class DouyinScraper:
             self.random_sleep(2.0, 3.0)
 
             # 滚动以加载评论
-            # 评论区通常在右侧或下方，尝试滚动页面
             new_page.mouse.wheel(0, 2000)
             self.random_sleep(1.0, 2.0)
+            
+            # 尝试点击 "暂无评论" 或 "全部评论" 来展开（如果有折叠）
+            try:
+                # 这是一个常见模式，但不一定存在
+                new_page.get_by_text("全部评论").click(timeout=2000)
+            except:
+                pass
 
             # 提取评论
-            # 假设评论容器类名，实际需调试
-            # 这里使用通用策略：查找包含文本的列表项
+            # 策略：获取所有可见的文本块，然后过滤
+            # 在没有确切 Selector 的情况下，我们遍历页面上的文本元素
             
-            # 尝试定位评论元素 (Douyin class names are obfuscated usually, e.g. 'comment-item')
-            # We try to find elements that look like comments. 
-            # Strategy: Find elements with text, filter by length/structure if possible.
-            # For now, we will try a generic approach or assume we need to inspect DOM manually later.
-            # Using a broad selector for demonstration in this 'blind' coding phase.
-            
-            # 模拟：获取所有文本内容较长的 div/span，假设是评论
-            # 在真实项目中，这里需要具体的 CSS Selector，例如 '.comment-content'
-            # 由于无法实时查看 DOM，我将使用一个假设的选择器，并在注释中说明需要替换
-            
-            # TODO: 替换为真实的评论选择器
-            comment_elements = new_page.locator('div[class*="comment-text"]').all() 
-            if not comment_elements:
-                 # Fallback: try finding elements with text that are likely comments
-                 pass
+            # 优化: 直接使用 locator 过滤包含关键词的元素
+            for kw in keywords:
+                try:
+                    # 查找包含关键词的元素
+                    found_elements = new_page.get_by_text(kw).all()
+                    for el in found_elements:
+                        try:
+                            if not el.is_visible():
+                                continue
+                                
+                            text = el.inner_text()
+                            if len(text) > 100: # 忽略过长的文本块（可能是整个区域）
+                                continue
+                                
+                            # 去重
+                            if any(r['content'] == text for r in results):
+                                continue
 
-            # 模拟提取 (因为没有真实 DOM，这里写逻辑框架)
-            # 实际运行时，如果选择器不对，将采集不到数据
+                            results.append({
+                                "video_url": video_url,
+                                "title": new_page.title(),
+                                "content": text.strip(),
+                                "matched_keyword": kw,
+                                "author": "Unknown", # 难以在无 Selector 下获取
+                                "publish_time": "Unknown", # 难以在无 Selector 下获取
+                                "scrape_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                        except:
+                            continue
+                except:
+                    pass
             
-            # 获取视频标题作为元数据
-            title = new_page.title()
-
-            # 假设我们能获取到评论文本
-            # 为了演示，我们假设页面上所有可见文本都可能是评论 (这很粗糙，但符合盲写逻辑)
-            # 更好的方式是等待用户反馈选择器
-            
-            # 这里我们只做逻辑框架：
-            # for el in comment_elements:
-            #    text = el.inner_text()
-            #    ...
-            
-            print("警告: 由于未提供具体的 CSS 选择器，评论提取逻辑仅为框架。请根据实际 DOM 更新 'src/scraper.py' 中的选择器。")
+            if not results:
+                 print(f"  - 未在视频 {video_url} 中找到包含关键词的评论。")
+            else:
+                 print(f"  - 找到 {len(results)} 条潜在意向评论！")
 
             new_page.close()
             
