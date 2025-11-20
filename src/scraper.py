@@ -97,53 +97,24 @@ class DouyinScraper:
 
     def search_and_filter(self, keyword: str):
         """搜索并应用时间筛选"""
-        print(f"正在搜索: {keyword}")
-        self.page.goto("https://www.douyin.com/")
-        self.page.wait_for_load_state("networkidle")
+        # 直接使用 URL 参数进行筛选，比点击 UI 更稳定
+        # publish_time=7 表示一周内
+        target_url = f"https://www.douyin.com/search/{keyword}?publish_time=7"
         
-        # 搜索框
-        search_input = self.page.locator('input[type="search"]')
-        # 如果首页没有搜索框（有时是登录页），尝试直接访问搜索URL
-        if not search_input.is_visible():
-             self.page.goto(f"https://www.douyin.com/search/{keyword}")
-        else:
-            search_input.fill(keyword)
-            self.random_sleep(0.5, 1.0)
-            self.page.keyboard.press("Enter")
+        print(f"正在搜索并筛选(一周内): {target_url}")
         
-        self.page.wait_for_load_state("networkidle")
-        self.random_sleep()
-
-        # 筛选 - 这是一个假设的交互流程，实际DOM可能不同，需要根据实际情况调整
-        # 通常会有 "筛选" 按钮，然后是 "发布时间"
         try:
-            # 尝试点击筛选 (假设文本是 "筛选")
-            # 增加超时设置，避免长时间阻塞
-            try:
-                filter_btn = self.page.get_by_text("筛选", exact=True)
-                # 使用 wait_for 等待元素出现，而不是立即判断 is_visible，且设置较短超时
-                filter_btn.wait_for(state="visible", timeout=5000) 
-                filter_btn.click()
-                self.random_sleep(0.5, 1.0)
-            except Exception:
-                print("未找到或无法点击'筛选'按钮，尝试直接查找时间选项...")
-
+            self.page.goto(target_url)
+            # 等待搜索结果加载（主要等待视频列表容器）
+            # 这里的 selector 可能需要根据实际页面调整，先等待通用的视频链接
+            # self.page.wait_for_selector('a[href*="/video/"]', timeout=15000) # 移除严格等待，防止超时
+            self.random_sleep(3.0, 5.0) # 给足加载时间
             
-            # 点击 "一周内" 或 "一天内"
-            # 这里使用 "一周内" 以确保覆盖3天
-            try:
-                time_filter = self.page.get_by_text("一周内")
-                if time_filter.is_visible():
-                    time_filter.click()
-                    print("已应用时间筛选: 一周内")
-                    self.random_sleep(2.0, 3.0)
-                else:
-                    print("未找到时间筛选选项")
-            except Exception:
-                 print("时间筛选操作失败或超时")
-                 
         except Exception as e:
-            print(f"筛选操作失败: {e}")
+            print(f"搜索页面加载可能超时，尝试继续: {e}")
+
+        # 旧的点击筛选逻辑已移除，改用 URL 参数更高效
+        self.random_sleep()
 
     def get_video_links(self, max_count: int = 20) -> List[str]:
         """滚动并获取视频链接"""
@@ -151,11 +122,14 @@ class DouyinScraper:
         scroll_attempts = 0
         
         while len(links) < max_count and scroll_attempts < 10:
-            # 获取当前可见的视频卡片链接
-            # 抖音搜索结果通常是 a 标签，href 包含 /video/
-            # 这是一个泛化的选择器
+            # 尝试多种选择器来定位视频链接
+            # 1. 通用规则: 包含 /video/ 的链接
             elements = self.page.locator('a[href*="/video/"]').all()
             
+            # 2. 如果上面没找到，尝试找包含 modal_id 的链接 (搜索页常见结构)
+            if not elements:
+                 elements = self.page.locator('a[href*="modal_id="]').all()
+
             for el in elements:
                 try:
                     href = el.get_attribute("href")
@@ -164,7 +138,9 @@ class DouyinScraper:
                         if href.startswith("/"):
                             href = "https://www.douyin.com" + href
                         # 简单去重
-                        if "/video/" in href:
+                        if "/video/" in href or "modal_id=" in href:
+                             # 对于 modal_id 链接，通常已经是完整的或需要进一步处理
+                             # 这里先统一收集
                             links.add(href)
                 except:
                     pass
@@ -175,8 +151,8 @@ class DouyinScraper:
                 break
 
             # 滚动
-            self.page.mouse.wheel(0, 1000)
-            self.random_sleep(1.0, 2.0)
+            self.page.mouse.wheel(0, 3000) # 加大滚动距离
+            self.random_sleep(1.5, 3.0)
             scroll_attempts += 1
             
         return list(links)[:max_count]
