@@ -118,13 +118,20 @@ class DouyinScraper:
         # 通常会有 "筛选" 按钮，然后是 "发布时间"
         try:
             # 尝试点击筛选 (假设文本是 "筛选")
-            filter_btn = self.page.get_by_text("筛选", exact=True)
-            if filter_btn.is_visible():
+            # 增加超时设置，避免长时间阻塞
+            try:
+                filter_btn = self.page.get_by_text("筛选", exact=True)
+                # 使用 wait_for 等待元素出现，而不是立即判断 is_visible，且设置较短超时
+                filter_btn.wait_for(state="visible", timeout=5000) 
                 filter_btn.click()
                 self.random_sleep(0.5, 1.0)
-                
-                # 点击 "一周内" 或 "一天内"
-                # 这里使用 "一周内" 以确保覆盖3天
+            except Exception:
+                print("未找到或无法点击'筛选'按钮，尝试直接查找时间选项...")
+
+            
+            # 点击 "一周内" 或 "一天内"
+            # 这里使用 "一周内" 以确保覆盖3天
+            try:
                 time_filter = self.page.get_by_text("一周内")
                 if time_filter.is_visible():
                     time_filter.click()
@@ -132,8 +139,9 @@ class DouyinScraper:
                     self.random_sleep(2.0, 3.0)
                 else:
                     print("未找到时间筛选选项")
-            else:
-                print("未找到筛选按钮，尝试继续...")
+            except Exception:
+                 print("时间筛选操作失败或超时")
+                 
         except Exception as e:
             print(f"筛选操作失败: {e}")
 
